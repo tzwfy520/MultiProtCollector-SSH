@@ -1,0 +1,73 @@
+"""
+配置管理模块
+通过环境变量加载配置信息
+"""
+from pydantic_settings import BaseSettings
+from typing import Optional
+import os
+
+
+class Settings(BaseSettings):
+    """应用配置类"""
+    
+    # 基础配置
+    app_name: str = "SSH Collector"
+    app_version: str = "1.0.0"
+    debug: bool = False
+    
+    # 服务配置
+    host: str = "0.0.0.0"
+    port: int = 8000
+    service_port: int = 8000  # 添加service_port配置
+    
+    # 采集器配置
+    collector_id: Optional[str] = None
+    collector_name: str = "ssh-collector"
+    
+    # 控制器配置
+    controller_host: str = "localhost"
+    controller_port: int = 9000
+    controller_register_url: str = "/api/v1/collectors/register"
+    controller_heartbeat_url: str = "/api/v1/collectors/heartbeat"
+    
+    # 心跳配置
+    heartbeat_interval: int = 3  # 秒
+    heartbeat_timeout: int = 9   # 连续3次未收到心跳认为离线
+    
+    # RabbitMQ配置
+    rabbitmq_host: str = "localhost"
+    rabbitmq_port: int = 5672
+    rabbitmq_username: str = "guest"
+    rabbitmq_password: str = "guest"
+    rabbitmq_vhost: str = "/"
+    
+    # 队列配置
+    task_queue: str = "ssh_collection_tasks"
+    result_queue: str = "ssh_collection_results"
+    
+    # SSH配置
+    ssh_timeout: int = 30
+    ssh_max_retries: int = 3
+    ssh_retry_delay: int = 1
+    
+    # 数据库配置
+    database_path: str = "data/collector.db"
+    DATABASE_PATH: str = "data/collector.db"  # 添加大写版本以保持兼容性
+    
+    # 日志配置
+    log_level: str = "INFO"
+    log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+
+
+# 全局配置实例
+settings = Settings()
+
+# 生成采集器ID（如果未设置）
+if not settings.collector_id:
+    import uuid
+    settings.collector_id = str(uuid.uuid4())

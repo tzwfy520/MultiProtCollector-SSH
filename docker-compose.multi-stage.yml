@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # 标准多阶段构建版本
+  ssh-collector-alpine:
+    build:
+      context: .
+      dockerfile: Dockerfile.multi-stage
+      target: runtime
+    container_name: ssh-collector-alpine
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=SSH采集器-Alpine
+      - APP_VERSION=1.0.0-alpine
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8000
+      - COLLECTOR_ID=collector-alpine-001
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - ssh-collector-network
+    healthcheck:
+      test: ["CMD", "./healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Distroless超小镜像版本
+  ssh-collector-distroless:
+    build:
+      context: .
+      dockerfile: Dockerfile.distroless
+      target: runtime
+    container_name: ssh-collector-distroless
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - APP_NAME=SSH采集器-Distroless
+      - APP_VERSION=1.0.0-distroless
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8000
+      - COLLECTOR_ID=collector-distroless-001
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - ssh-collector-network
+    # 注意：Distroless镜像不支持shell，无法使用healthcheck脚本
+    # healthcheck:
+    #   test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
+
+  # 原始版本（用于对比）
+  ssh-collector-original:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ssh-collector-original
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    environment:
+      - APP_NAME=SSH采集器-Original
+      - APP_VERSION=1.0.0-original
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8000
+      - COLLECTOR_ID=collector-original-001
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - ssh-collector-network
+    healthcheck:
+      test: ["CMD", "./healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    profiles:
+      - comparison
+
+networks:
+  ssh-collector-network:
+    driver: bridge

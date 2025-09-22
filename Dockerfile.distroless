@@ -1,0 +1,53 @@
+# SSH采集器Distroless构建Dockerfile
+# 第一阶段：构建阶段 - 使用完整的Python镜像进行依赖编译
+FROM python:3.11-slim as builder
+
+# 设置构建环境变量
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# 安装构建依赖
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    libc6-dev \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建虚拟环境
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# 复制并安装Python依赖
+COPY requirements.txt .
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
+
+# 编译应用代码
+COPY src/ /app/src/
+WORKDIR /app
+RUN python -m compileall src/
+
+# 第二阶段：运行阶段 - 使用Google Distroless镜像
+FROM gcr.io/distroless/python3-debian12:latest as runtime
+
+# 设置环境变量
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/opt/venv/bin:$PATH"
+
+# 从构建阶段复制虚拟环境和应用
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /app /app
+
+# 设置工作目录
+WORKDIR /app
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动命令 (Distroless不支持shell，直接使用Python)
+ENTRYPOINT ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

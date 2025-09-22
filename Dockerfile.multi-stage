@@ -1,0 +1,83 @@
+# SSH采集器多阶段构建Dockerfile
+# 第一阶段：构建阶段 - 使用完整的Python镜像进行依赖编译
+FROM python:3.11-slim as builder
+
+# 设置构建环境变量
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# 安装构建依赖
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    libc6-dev \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建虚拟环境
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# 复制并安装Python依赖
+COPY requirements.txt .
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
+
+# 第二阶段：运行阶段 - 使用Alpine Linux最小化镜像
+FROM python:3.11-alpine as runtime
+
+# 设置运行环境变量
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/opt/venv/bin:$PATH"
+
+# 安装运行时必需的系统依赖
+RUN apk add --no-cache \
+    libffi \
+    openssl \
+    ca-certificates \
+    tzdata \
+    curl \
+    bash \
+    && rm -rf /var/cache/apk/*
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 从构建阶段复制虚拟环境
+COPY --from=builder /opt/venv /opt/venv
+
+# 设置工作目录
+WORKDIR /app
+
+# 创建必要目录
+RUN mkdir -p /app/data /app/logs
+
+# 复制应用代码
+COPY src/ ./src/
+COPY healthcheck.sh .
+
+# 设置脚本权限
+RUN chmod +x healthcheck.sh
+
+# 创建非root用户
+RUN addgroup -g 1000 collector && \
+    adduser -D -u 1000 -G collector collector && \
+    chown -R collector:collector /app
+
+# 切换到非root用户
+USER collector
+
+# 暴露端口
+EXPOSE 8000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD ./healthcheck.sh
+
+# 启动命令
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
