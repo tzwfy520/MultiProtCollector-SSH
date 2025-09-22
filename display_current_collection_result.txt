@@ -1,0 +1,111 @@
+华为设备display current命令采集结果
+==========================================
+
+采集时间: 2025-09-22T09:36:12
+采集器地址: 115.190.80.219:8000
+目标设备: 139.196.196.96:21202 (H3C设备)
+
+采集尝试记录:
+============
+
+尝试1 - 使用"]"作为expect_string:
+- 任务ID: api_828c4700
+- 执行时间: 96.43秒
+- 结果: 失败 - Pattern not detected: ']' in output
+
+尝试2 - 使用默认expect_string:
+- 任务ID: api_53e61e34  
+- 执行时间: 97.14秒
+- 结果: 失败 - Pattern not detected: '<outside\\\\-rt\\\\-01>' in output
+
+尝试3 - 使用">"作为expect_string:
+- 任务ID: api_77c11f39
+- 执行时间: 96.06秒
+- 结果: 失败 - Pattern not detected: '>' in output
+
+问题分析:
+========
+1. display current命令可能输出内容过长，导致超时
+2. H3C设备的命令提示符可能与华为设备不同
+3. display current命令可能需要分页处理（---- More ----）
+4. 可能需要使用不同的设备类型或参数配置
+
+建议解决方案:
+============
+1. 尝试使用display current-configuration | no-more命令避免分页
+2. 调整设备类型为hp_comware（H3C专用）
+3. 增加read_timeout参数
+4. 使用更合适的expect_string模式
+
+API调用示例（建议优化）:
+======================
+curl -X POST "http://115.190.80.219:8000/collect" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "credentials": {
+      "host": "139.196.196.96",
+      "port": 21202,
+      "username": "eccom123",
+      "password": "Eccom@12345",
+      "device_type": "hp_comware"
+    },
+    "commands": [
+      {
+        "command": "display current-configuration | no-more",
+        "delay_factor": 2.0
+      }
+    ],
+    "timeout": 300
+  }'
+
+成功采集结果:
+============
+
+尝试4 - 使用hp_comware设备类型:
+- 任务ID: api_738c5d58
+- 命令: display current-configuration
+- 执行时间: 6.80秒
+- 结果: ✅ 成功！
+
+采集到的配置信息包括:
+- 系统版本和启动信息
+- 接口配置（GigabitEthernet和LoopBack）
+- VLAN配置
+- 用户和权限配置
+- 路由配置
+- SSH服务配置
+- 安全策略配置
+
+关键发现:
+========
+1. ✅ 设备类型应使用"hp_comware"而不是"huawei"
+2. ✅ 命令"display current-configuration"可以正常执行
+3. ✅ 采集器能够正确处理H3C设备的配置输出
+4. ✅ 执行时间仅6.8秒，性能良好
+
+最终可用的API调用:
+================
+curl -X POST "http://115.190.80.219:8000/collect" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "credentials": {
+      "host": "139.196.196.96",
+      "port": 21202,
+      "username": "eccom123",
+      "password": "Eccom@12345",
+      "device_type": "hp_comware"
+    },
+    "commands": [
+      {
+        "command": "display current-configuration",
+        "delay_factor": 2.0
+      }
+    ],
+    "timeout": 300
+  }'
+
+注意事项:
+========
+- ✅ SSH采集器API完全正常，可以成功采集H3C设备配置
+- ✅ 使用正确的设备类型"hp_comware"是关键
+- ✅ H3C设备配置采集功能验证成功

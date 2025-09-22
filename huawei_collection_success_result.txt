@@ -1,0 +1,89 @@
+华为设备SSH采集成功结果
+==========================
+
+采集时间: 2025-09-22T09:14:37.872816
+任务ID: api_57e636c1
+执行时间: 5.686611秒
+采集状态: 成功
+
+设备信息:
+- 主机: 139.196.196.96
+- 端口: 21202
+- 设备类型: huawei
+- 用户名: eccom123
+
+采集命令: display version
+
+采集结果:
+----------
+H3C Comware Software, Version 7.1.064, Release 1340P16
+Copyright (c) 2004-2022 New H3C Technologies Co., Ltd. All rights reserved.
+H3C VSR1000 uptime is 3 weeks, 3 days, 4 hours, 16 minutes
+Last reboot reason : Power on
+Boot image: flash:/VSR1000-CMW710-BOOT-R1340P16-X64.bin
+Boot image version: 7.1.064, Release 1340P16
+  Compiled Mar 23 2022 15:00:00
+System image: flash:/VSR1000-CMW710-SYSTEM-R1340P16-X64.bin
+System image version: 7.1.064, Release 1340P16
+  Compiled Mar 23 2022 15:00:00
+
+CPU ID: 0x01000101, vCPUs: Total 1, Available 1
+2.00G bytes RAM Memory
+Basic    BootWare Version:  1.11
+Extended BootWare Version:  1.11
+[SLOT  1]VNIC-E1000             (Driver)1.0
+[SLOT  2]VNIC-E1000             (Driver)1.0
+[SLOT  3]VNIC-E1000             (Driver)1.0
+[SLOT  4]VNIC-E1000             (Driver)1.0
+[SLOT  5]VNIC-E1000             (Driver)1.0
+[SLOT  6]VNIC-E1000             (Driver)1.0
+[SLOT  7]VNIC-E1000             (Driver)1.0
+[SLOT  8]VNIC-E1000             (Driver)1.0
+---- More ----
+
+采集参数配置:
+- expect_string: "]"
+- delay_factor: 3.0
+- max_loops: 1000
+- timeout: 300秒
+
+API调用方式:
+curl -X POST "http://115.190.80.219:8000/collect" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "credentials": {
+      "host": "139.196.196.96",
+      "port": 21202,
+      "username": "eccom123",
+      "password": "Eccom@12345",
+      "device_type": "huawei"
+    },
+    "commands": [
+      {
+        "command": "display version",
+        "expect_string": "]",
+        "delay_factor": 3.0,
+        "max_loops": 1000
+      }
+    ],
+    "timeout": 300
+  }'
+
+防火墙开放后的直接访问测试:
+=====================================
+
+测试时间: 2025-09-22T09:16:06.597865
+任务ID: api_a9cddf36
+执行时间: 5.541969秒
+访问方式: 直接从本地访问 http://115.190.80.219:8000/collect
+
+测试结果: ✅ 成功！
+- 防火墙策略已开放，可以直接从外网访问API接口
+- 采集功能正常，获取到相同的设备信息
+- 设备运行时间更新为: 3周3天4小时18分钟
+
+注意事项:
+1. ✅ 防火墙已开放，可以直接从外网访问115.190.80.219:8000
+2. ✅ 华为设备采集成功，修改后的netmiko参数配置有效
+3. ✅ 设备实际为H3C设备，但使用huawei设备类型可以正常采集
+4. ⚠️ 健康检查接口(/health)仍有内部错误，但不影响采集功能

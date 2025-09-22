@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# SSH采集器自动部署脚本
-# 支持SSH密码自动输入和远程部署
+# SSH采集器自动部署脚本 - 使用SSH密钥认证
+# 避免使用sshpass，更安全的部署方式
 
 set -e
 
@@ -11,6 +11,7 @@ USERNAME="eccom123"
 PASSWORD="Eccom@12345"
 DEPLOY_DIR="/opt/ssh-collector"
 PROJECT_NAME="ssh-collector"
+SSH_KEY_PATH="$HOME/.ssh/id_rsa"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -36,63 +37,93 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 检查依赖
-check_dependencies() {
-    log_info "检查部署依赖..."
+# 生成SSH密钥对
+generate_ssh_key() {
+    log_info "检查SSH密钥..."
     
-    # 检查sshpass
-    if ! command -v sshpass &> /dev/null; then
-        log_warning "sshpass未安装，正在安装..."
+    if [[ ! -f "$SSH_KEY_PATH" ]]; then
+        log_info "生成SSH密钥对..."
+        ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_PATH" -N "" -C "deploy@$(hostname)"
+        log_success "SSH密钥生成完成"
+    else
+        log_success "SSH密钥已存在"
+    fi
+}
+
+# 使用expect脚本复制SSH密钥到服务器
+copy_ssh_key() {
+    log_info "复制SSH密钥到服务器..."
+    
+    # 检查expect是否安装
+    if ! command -v expect &> /dev/null; then
+        log_warning "expect未安装，正在安装..."
         if [[ "$OSTYPE" == "darwin"* ]]; then
             # macOS
             if command -v brew &> /dev/null; then
-                brew install sshpass
+                brew install expect
             else
-                log_error "请先安装Homebrew或手动安装sshpass"
+                log_error "请先安装Homebrew或手动安装expect"
                 exit 1
             fi
         elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
             # Linux
             if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y sshpass
+                sudo apt-get update && sudo apt-get install -y expect
             elif command -v yum &> /dev/null; then
-                sudo yum install -y sshpass
+                sudo yum install -y expect
             else
-                log_error "无法自动安装sshpass，请手动安装"
+                log_error "无法自动安装expect，请手动安装"
                 exit 1
             fi
         fi
     fi
     
-    # 检查rsync
-    if ! command -v rsync &> /dev/null; then
-        log_error "rsync未安装，请先安装rsync"
+    # 创建expect脚本
+    cat > /tmp/ssh-copy-id.exp << EOF
+#!/usr/bin/expect -f
+set timeout 30
+spawn ssh-copy-id -i $SSH_KEY_PATH.pub $USERNAME@$SERVER_IP
+expect {
+    "yes/no" { send "yes\r"; exp_continue }
+    "password:" { send "$PASSWORD\r" }
+}
+expect eof
+EOF
+    
+    chmod +x /tmp/ssh-copy-id.exp
+    
+    # 执行expect脚本
+    if /tmp/ssh-copy-id.exp; then
+        log_success "SSH密钥复制成功"
+    else
+        log_error "SSH密钥复制失败"
         exit 1
     fi
     
-    log_success "依赖检查完成"
+    # 清理临时文件
+    rm -f /tmp/ssh-copy-id.exp
 }
 
-# SSH执行命令函数
+# SSH执行命令函数（使用密钥认证）
 ssh_exec() {
     local cmd="$1"
     local show_output="${2:-true}"
     
     if [[ "$show_output" == "true" ]]; then
-        sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$USERNAME@$SERVER_IP" "$cmd"
+        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY_PATH" "$USERNAME@$SERVER_IP" "$cmd"
     else
-        sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$USERNAME@$SERVER_IP" "$cmd" >/dev/null 2>&1
+        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY_PATH" "$USERNAME@$SERVER_IP" "$cmd" >/dev/null 2>&1
     fi
 }
 
 # 测试SSH连接
 test_ssh_connection() {
-    log_info "测试SSH连接到 $SERVER_IP..."
+    log_info "测试SSH密钥连接到 $SERVER_IP..."
     
-    if ssh_exec "echo 'SSH连接成功'" false; then
-        log_success "SSH连接测试成功"
+    if ssh_exec "echo 'SSH密钥连接成功'" false; then
+        log_success "SSH密钥连接测试成功"
     else
-        log_error "SSH连接失败，请检查服务器地址、用户名和密码"
+        log_error "SSH密钥连接失败，请检查密钥配置"
         exit 1
     fi
 }
@@ -109,7 +140,7 @@ check_server_environment() {
     if ssh_exec "sudo -n true" false; then
         log_success "sudo权限验证成功"
     else
-        log_warning "需要sudo密码，将使用密码认证"
+        log_warning "需要sudo密码，将在需要时提示"
     fi
     
     # 检查Docker
@@ -206,7 +237,11 @@ upload_project_files() {
     cp -r src/ "$TEMP_DIR/"
     cp requirements.txt "$TEMP_DIR/"
     cp healthcheck.sh "$TEMP_DIR/"
-    cp nginx/nginx.conf "$TEMP_DIR/"
+    
+    # 检查nginx配置文件是否存在
+    if [[ -f "nginx/nginx.conf" ]]; then
+        cp nginx/nginx.conf "$TEMP_DIR/"
+    fi
     
     # 复制Alpine版本的Dockerfile
     cp Dockerfile.alpine "$TEMP_DIR/Dockerfile"
@@ -215,7 +250,7 @@ upload_project_files() {
     cp docker-compose.alpine.yml "$TEMP_DIR/docker-compose.yml"
     
     # 使用rsync上传文件
-    sshpass -p "$PASSWORD" rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no" \
+    rsync -avz --delete -e "ssh -o StrictHostKeyChecking=no -i $SSH_KEY_PATH" \
         "$TEMP_DIR/" "$USERNAME@$SERVER_IP:$DEPLOY_DIR/"
     
     # 清理临时目录
@@ -252,9 +287,8 @@ verify_deployment() {
     log_info "验证部署结果..."
     
     # 检查容器状态
-    CONTAINER_STATUS=$(ssh_exec "cd $DEPLOY_DIR && docker-compose ps --format table" false)
     log_info "容器状态:"
-    echo "$CONTAINER_STATUS"
+    ssh_exec "cd $DEPLOY_DIR && docker-compose ps"
     
     # 检查服务健康状态
     if ssh_exec "cd $DEPLOY_DIR && docker-compose exec -T ssh-collector curl -f http://localhost:8000/health" false; then
@@ -286,12 +320,13 @@ show_logs() {
 
 # 主函数
 main() {
-    log_info "开始SSH采集器自动部署..."
+    log_info "开始SSH采集器自动部署（使用SSH密钥认证）..."
     log_info "目标服务器: $SERVER_IP"
     log_info "部署目录: $DEPLOY_DIR"
     
     # 执行部署步骤
-    check_dependencies
+    generate_ssh_key
+    copy_ssh_key
     test_ssh_connection
     check_server_environment
     create_deploy_directory

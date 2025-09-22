@@ -73,7 +73,17 @@ class SSHCollector:
                 'session_timeout': credentials.timeout,
                 'auth_timeout': credentials.timeout,
                 'banner_timeout': credentials.timeout,
+                'read_timeout_override': 60,  # 增加读取超时时间
+                'global_delay_factor': 2,     # 增加全局延迟因子
             }
+            
+            # 华为设备特殊配置
+            if credentials.device_type in ['huawei', 'huawei_vrpv8']:
+                connection_params.update({
+                    'global_delay_factor': 3,
+                    'read_timeout_override': 90,
+                    'session_timeout': 120,
+                })
             
             # 添加认证方式
             if credentials.password:
@@ -134,13 +144,19 @@ class SSHCollector:
                     ssh_command.command,
                     expect_string=ssh_command.expect_string,
                     delay_factor=ssh_command.delay_factor,
-                    max_loops=ssh_command.max_loops
+                    max_loops=ssh_command.max_loops,
+                    read_timeout=120  # 增加读取超时时间
                 )
             else:
+                # 对于华为设备，尝试自动检测提示符
                 output = self.connection.send_command(
                     ssh_command.command,
-                    delay_factor=ssh_command.delay_factor,
-                    max_loops=ssh_command.max_loops
+                    delay_factor=max(ssh_command.delay_factor, 3.0),  # 最小延迟因子为3
+                    max_loops=max(ssh_command.max_loops, 1000),       # 最小循环次数为1000
+                    read_timeout=120,                                 # 增加读取超时时间
+                    auto_find_prompt=True,                           # 自动查找提示符
+                    strip_prompt=False,                              # 保留提示符
+                    strip_command=False                              # 保留命令
                 )
             
             logger.debug(f"命令执行成功，输出长度: {len(output)}")
