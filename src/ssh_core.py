@@ -1,6 +1,7 @@
 """
 SSH采集核心逻辑模块
 基于netmiko库实现SSH连接和命令执行
+支持多线程并发采集
 """
 import time
 from typing import Dict, Any, List, Optional, Union
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 from .utils import logger, handle_exception, SSHConnectionException, TaskExecutionException, format_ssh_result, validate_ssh_params
 from .config import settings
 from .database import create_task_record, update_task_status, complete_task
+from .thread_pool_manager import thread_pool_manager
 
 # 导入插件管理器
 try:
@@ -495,6 +497,163 @@ class SimpleSSHCollector:
             
         finally:
             collector.disconnect()
+
+
+class MultiThreadSSHCollector:
+    """多线程SSH采集器"""
+    
+    @staticmethod
+    def _execute_single_task(task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        执行单个采集任务（用于多线程）
+        
+        Args:
+            task_data: 任务数据，包含task_id, credentials, commands等
+            
+        Returns:
+            任务执行结果
+        """
+        task_id = task_data.get('task_id', 'unknown')
+        start_time = time.time()
+        
+        try:
+            # 创建任务对象
+            task = CollectionTask(**task_data)
+            
+            # 使用独立的采集器实例（避免线程间冲突）
+            collector = SSHCollector()
+            result = collector.collect_with_retry(task)
+            
+            logger.info(f"多线程任务完成: {task_id}, 耗时: {time.time() - start_time:.2f}s")
+            return result
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.error(f"多线程任务执行失败: {task_id}, 错误: {e}, 耗时: {execution_time:.2f}s")
+            
+            return {
+                "task_id": task_id,
+                "host": task_data.get('credentials', {}).get('host', 'unknown'),
+                "success": False,
+                "error": str(e),
+                "execution_time": execution_time,
+                "total_commands": len(task_data.get('commands', [])),
+                "success_commands": 0,
+                "failed_commands": len(task_data.get('commands', [])),
+                "results": []
+            }
+    
+    @staticmethod
+    @handle_exception
+    def execute_batch_tasks(tasks: List[Dict[str, Any]], 
+                          max_workers: Optional[int] = None,
+                          enable_threading: Optional[bool] = None) -> Dict[str, Any]:
+        """
+        批量执行采集任务（支持多线程）
+        
+        Args:
+            tasks: 任务列表，每个任务包含完整的任务数据
+            max_workers: 最大并发线程数，默认使用配置值
+            enable_threading: 是否启用多线程，默认使用配置值
+            
+        Returns:
+            批量执行结果
+        """
+        start_time = time.time()
+        total_tasks = len(tasks)
+        
+        # 确定是否使用多线程
+        use_threading = enable_threading if enable_threading is not None else settings.enable_threading
+        workers = max_workers or settings.max_concurrent_threads
+        
+        logger.info(f"开始批量执行 {total_tasks} 个采集任务，多线程: {use_threading}, 最大并发: {workers}")
+        
+        if use_threading and total_tasks > 1:
+            # 使用线程池管理器并行执行
+            results = thread_pool_manager.execute_tasks_parallel(
+                tasks=tasks,
+                task_func=MultiThreadSSHCollector._execute_single_task,
+                max_workers=workers
+            )
+        else:
+            # 串行执行
+            logger.info("使用串行模式执行任务")
+            results = []
+            for task_data in tasks:
+                result = MultiThreadSSHCollector._execute_single_task(task_data)
+                results.append(result)
+        
+        # 统计结果
+        execution_time = time.time() - start_time
+        success_tasks = sum(1 for r in results if r.get("success", False))
+        failed_tasks = total_tasks - success_tasks
+        
+        # 统计命令执行情况
+        total_commands = sum(r.get("total_commands", 0) for r in results)
+        success_commands = sum(r.get("success_commands", 0) for r in results)
+        failed_commands = sum(r.get("failed_commands", 0) for r in results)
+        
+        batch_result = {
+            "success": True,
+            "batch_id": f"batch_{int(start_time)}",
+            "execution_time": execution_time,
+            "threading_enabled": use_threading,
+            "max_workers": workers if use_threading else 1,
+            "summary": {
+                "total_tasks": total_tasks,
+                "success_tasks": success_tasks,
+                "failed_tasks": failed_tasks,
+                "total_commands": total_commands,
+                "success_commands": success_commands,
+                "failed_commands": failed_commands
+            },
+            "task_results": results
+        }
+        
+        logger.info(f"批量任务执行完成 - 总任务: {total_tasks}, 成功: {success_tasks}, "
+                   f"失败: {failed_tasks}, 耗时: {execution_time:.2f}s")
+        
+        return batch_result
+    
+    @staticmethod
+    @handle_exception
+    def execute_multi_host_commands(hosts_credentials: List[SSHCredentials],
+                                  commands: List[SSHCommand],
+                                  max_workers: Optional[int] = None,
+                                  timeout: int = 300,
+                                  retry_count: int = 3) -> Dict[str, Any]:
+        """
+        对多个主机执行相同的命令集（多线程）
+        
+        Args:
+            hosts_credentials: 主机凭据列表
+            commands: 要执行的命令列表
+            max_workers: 最大并发线程数
+            timeout: 任务超时时间
+            retry_count: 重试次数
+            
+        Returns:
+            多主机执行结果
+        """
+        # 构建任务列表
+        tasks = []
+        for i, credentials in enumerate(hosts_credentials):
+            task_data = {
+                "task_id": f"multi_host_task_{i}_{credentials.host}_{int(time.time())}",
+                "credentials": credentials.dict(),
+                "commands": [cmd.dict() for cmd in commands],
+                "timeout": timeout,
+                "retry_count": retry_count
+            }
+            tasks.append(task_data)
+        
+        logger.info(f"准备对 {len(hosts_credentials)} 个主机执行 {len(commands)} 个命令")
+        
+        # 执行批量任务
+        return MultiThreadSSHCollector.execute_batch_tasks(
+            tasks=tasks,
+            max_workers=max_workers
+        )
 
 
 # 全局采集器实例

@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     ssh_max_retries: int = 3
     ssh_retry_delay: int = 1
     
+    # 多线程采集配置
+    max_concurrent_threads: int = 2  # 最大并发采集线程数
+    thread_pool_timeout: int = 300   # 线程池任务超时时间（秒）
+    enable_threading: bool = True    # 是否启用多线程采集
+    
     # 数据库配置
     database_path: str = "data/collector.db"
     DATABASE_PATH: str = "data/collector.db"  # 添加大写版本以保持兼容性

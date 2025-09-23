@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
 
-from ..config import config
+from ..config import settings
 from ..utils import logger
 from .handler import ssh_collection_handler
 
@@ -65,14 +65,14 @@ class XXLJobExecutor:
         """启动执行器HTTP服务"""
         try:
             # 确保日志目录存在
-            log_path = config.xxl_job_executor_log_path
+            log_path = settings.xxl_job_executor_log_path
             os.makedirs(log_path, exist_ok=True)
             
             # 配置uvicorn服务器
             server_config = uvicorn.Config(
                 app=self.app,
                 host="0.0.0.0",
-                port=config.xxl_job_executor_port,
+                port=settings.xxl_job_executor_port,
                 log_level="info",
                 access_log=False
             )
@@ -82,7 +82,7 @@ class XXLJobExecutor:
             # 在后台任务中启动服务器
             self.server_task = asyncio.create_task(self.server.serve())
             
-            logger.info(f"XXL-Job执行器HTTP服务启动成功，端口: {config.xxl_job_executor_port}")
+            logger.info(f"XXL-Job执行器HTTP服务启动成功，端口: {settings.xxl_job_executor_port}")
             
         except Exception as e:
             logger.error(f"启动XXL-Job执行器HTTP服务失败: {e}")
@@ -212,7 +212,7 @@ class XXLJobExecutor:
             
             # 构建日志文件路径
             log_file = os.path.join(
-                config.xxl_job_executor_log_path,
+                settings.xxl_job_executor_log_path,
                 f"{log_id}.log"
             )
             
@@ -266,7 +266,7 @@ class XXLJobExecutor:
     
     async def _execute_task(self, log_id: str, executor_params: str, executor_timeout: int):
         """执行具体任务"""
-        log_file = os.path.join(config.xxl_job_executor_log_path, f"{log_id}.log")
+        log_file = os.path.join(settings.xxl_job_executor_log_path, f"{log_id}.log")
         
         try:
             # 创建日志文件

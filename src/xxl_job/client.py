@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 import aiohttp
-from ..config import config
+from ..config import settings
 from ..utils import logger
 
 
@@ -19,12 +19,13 @@ class XXLJobClient:
     """XXL-Job客户端"""
     
     def __init__(self):
-        self.admin_addresses = config.xxl_job_admin_addresses
-        self.access_token = config.xxl_job_access_token
-        self.app_name = config.xxl_job_executor_app_name
-        self.executor_address = config.xxl_job_executor_address
-        self.executor_ip = config.xxl_job_executor_ip or self._get_local_ip()
-        self.executor_port = config.xxl_job_executor_port
+        """初始化XXL-Job客户端"""
+        self.admin_addresses = settings.xxl_job_admin_addresses
+        self.access_token = settings.xxl_job_access_token
+        self.app_name = settings.xxl_job_executor_app_name
+        self.executor_address = settings.xxl_job_executor_address
+        self.executor_ip = settings.xxl_job_executor_ip or self._get_local_ip()
+        self.executor_port = settings.xxl_job_executor_port
         self.session: Optional[aiohttp.ClientSession] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._registered = False

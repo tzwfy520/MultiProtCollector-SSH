@@ -1,6 +1,7 @@
 """
 XXL-Job任务处理器
 封装SSH采集任务的具体执行逻辑
+支持多线程并发采集
 """
 
 import json
@@ -8,8 +9,9 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from ..ssh_core import SSHCollector, SSHCredentials, SSHCommand, CollectionTask
+from ..ssh_core import SSHCollector, SSHCredentials, SSHCommand, CollectionTask, MultiThreadSSHCollector
 from ..utils import logger
+from ..config import settings
 
 
 class SSHCollectionHandler:
@@ -237,7 +239,7 @@ class SSHCollectionHandler:
     
     async def _execute_batch_collection(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        执行批量采集任务
+        执行批量采集任务（支持多线程）
         
         Args:
             params: 任务参数
@@ -256,51 +258,23 @@ class SSHCollectionHandler:
                     "data": None
                 }
             
-            results = []
-            success_count = 0
+            # 检查是否启用多线程
+            enable_threading = params.get("enable_threading", settings.enable_threading)
+            max_workers = params.get("max_workers", settings.max_concurrent_threads)
             
-            for host_config in hosts:
-                try:
-                    # 为每个主机创建单独的参数
-                    host_params = params.copy()
-                    host_params.update(host_config)
-                    
-                    # 执行单个主机的采集
-                    host_result = await self._execute_simple_collection(host_params)
-                    results.append({
-                        "host": host_config.get("host", "unknown"),
-                        "result": host_result
-                    })
-                    
-                    if host_result.get("success", False):
-                        success_count += 1
-                        
-                except Exception as e:
-                    results.append({
-                        "host": host_config.get("host", "unknown"),
-                        "result": {
-                            "success": False,
-                            "error": str(e),
-                            "data": None
-                        }
-                    })
+            logger.info(f"批量采集任务 - 主机数: {len(hosts)}, 多线程: {enable_threading}, 最大并发: {max_workers}")
+            
+            if enable_threading and len(hosts) > 1:
+                # 使用多线程批量执行
+                result = await self._execute_multi_thread_batch(params, hosts, max_workers)
+            else:
+                # 使用串行执行
+                result = await self._execute_serial_batch(params, hosts)
             
             execution_time = (datetime.now() - start_time).total_seconds()
+            result["execution_time"] = execution_time
             
-            return {
-                "success": success_count > 0,
-                "data": {
-                    "total_hosts": len(hosts),
-                    "success_count": success_count,
-                    "failed_count": len(hosts) - success_count,
-                    "results": results
-                },
-                "execution_time": execution_time,
-                "task_info": {
-                    "task_type": "batch",
-                    "host_count": len(hosts)
-                }
-            }
+            return result
             
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
@@ -314,6 +288,178 @@ class SSHCollectionHandler:
                     "error_type": type(e).__name__
                 }
             }
+    
+    async def _execute_multi_thread_batch(self, params: Dict[str, Any], 
+                                        hosts: List[Dict[str, Any]], 
+                                        max_workers: int) -> Dict[str, Any]:
+        """
+        使用多线程执行批量采集任务
+        
+        Args:
+            params: 基础任务参数
+            hosts: 主机配置列表
+            max_workers: 最大并发线程数
+            
+        Returns:
+            Dict[str, Any]: 执行结果
+        """
+        try:
+            # 构建任务列表
+            tasks = []
+            for i, host_config in enumerate(hosts):
+                # 创建SSH凭据
+                credentials_data = {
+                    "host": host_config.get("host"),
+                    "port": host_config.get("port", 22),
+                    "username": host_config.get("username"),
+                    "password": host_config.get("password"),
+                    "private_key": host_config.get("private_key"),
+                    "device_type": host_config.get("device_type", "linux"),
+                    "timeout": host_config.get("timeout", 30)
+                }
+                
+                # 创建命令列表
+                commands_data = []
+                for cmd in params.get("commands", []):
+                    if isinstance(cmd, str):
+                        commands_data.append({"command": cmd})
+                    else:
+                        commands_data.append(cmd)
+                
+                # 构建任务数据
+                task_data = {
+                    "task_id": f"batch_task_{i}_{host_config.get('host')}_{int(datetime.now().timestamp())}",
+                    "credentials": credentials_data,
+                    "commands": commands_data,
+                    "timeout": params.get("timeout", 300),
+                    "retry_count": params.get("retry_count", 3)
+                }
+                tasks.append(task_data)
+            
+            # 在线程池中执行批量任务
+            loop = asyncio.get_event_loop()
+            batch_result = await loop.run_in_executor(
+                None,
+                lambda: MultiThreadSSHCollector.execute_batch_tasks(
+                    tasks=tasks,
+                    max_workers=max_workers,
+                    enable_threading=True
+                )
+            )
+            
+            # 转换结果格式以匹配原有接口
+            results = []
+            success_count = 0
+            
+            for task_result in batch_result.get("task_results", []):
+                host = task_result.get("host", "unknown")
+                success = task_result.get("success", False)
+                
+                results.append({
+                    "host": host,
+                    "result": {
+                        "success": success,
+                        "data": task_result.get("results", []) if success else None,
+                        "error": task_result.get("error") if not success else None,
+                        "execution_time": task_result.get("execution_time", 0),
+                        "total_commands": task_result.get("total_commands", 0),
+                        "success_commands": task_result.get("success_commands", 0),
+                        "failed_commands": task_result.get("failed_commands", 0)
+                    }
+                })
+                
+                if success:
+                    success_count += 1
+            
+            return {
+                "success": success_count > 0,
+                "data": {
+                    "total_hosts": len(hosts),
+                    "success_count": success_count,
+                    "failed_count": len(hosts) - success_count,
+                    "results": results,
+                    "threading_info": {
+                        "enabled": True,
+                        "max_workers": max_workers,
+                        "batch_execution_time": batch_result.get("execution_time", 0)
+                    }
+                },
+                "task_info": {
+                    "task_type": "batch_multithread",
+                    "host_count": len(hosts)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"多线程批量采集执行失败: {e}")
+            return {
+                "success": False,
+                "error": f"多线程执行失败: {str(e)}",
+                "data": None,
+                "task_info": {
+                    "task_type": "batch_multithread",
+                    "error_type": type(e).__name__
+                }
+            }
+    
+    async def _execute_serial_batch(self, params: Dict[str, Any], 
+                                  hosts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        使用串行方式执行批量采集任务
+        
+        Args:
+            params: 基础任务参数
+            hosts: 主机配置列表
+            
+        Returns:
+            Dict[str, Any]: 执行结果
+        """
+        results = []
+        success_count = 0
+        
+        for host_config in hosts:
+            try:
+                # 为每个主机创建单独的参数
+                host_params = params.copy()
+                host_params.update(host_config)
+                
+                # 执行单个主机的采集
+                host_result = await self._execute_simple_collection(host_params)
+                results.append({
+                    "host": host_config.get("host", "unknown"),
+                    "result": host_result
+                })
+                
+                if host_result.get("success", False):
+                    success_count += 1
+                    
+            except Exception as e:
+                results.append({
+                    "host": host_config.get("host", "unknown"),
+                    "result": {
+                        "success": False,
+                        "error": str(e),
+                        "data": None
+                    }
+                })
+        
+        return {
+            "success": success_count > 0,
+            "data": {
+                "total_hosts": len(hosts),
+                "success_count": success_count,
+                "failed_count": len(hosts) - success_count,
+                "results": results,
+                "threading_info": {
+                    "enabled": False,
+                    "max_workers": 1
+                }
+            },
+            "task_info": {
+                "task_type": "batch_serial",
+                "host_count": len(hosts)
+            }
+        }
     
     async def _execute_scheduled_collection(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
