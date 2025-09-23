@@ -10,6 +10,13 @@ from .utils import logger, handle_exception, SSHConnectionException, TaskExecuti
 from .config import settings
 from .database import create_task_record, update_task_status, complete_task
 
+# 导入插件管理器
+try:
+    from ..addone.plugin_manager import plugin_manager
+except ImportError:
+    logger.warning("插件管理器导入失败，将使用默认配置")
+    plugin_manager = None
+
 
 class SSHCredentials(BaseModel):
     """SSH连接凭据"""
@@ -45,6 +52,53 @@ class SSHCollector:
     def __init__(self):
         self.connection = None
         self.current_host = None
+        self.device_type = None
+    
+    def _apply_plugin_command_params(self, ssh_command: SSHCommand, device_type: str) -> SSHCommand:
+        """应用插件的命令参数"""
+        if not plugin_manager or not plugin_manager.has_plugin(device_type):
+            return ssh_command
+        
+        device_config = plugin_manager.get_device_config(device_type)
+        if not device_config:
+            return ssh_command
+        
+        # 创建命令副本以避免修改原始对象
+        command_dict = ssh_command.dict()
+        
+        # 应用通用命令参数
+        if 'command_params' in device_config:
+            plugin_params = device_config['command_params']
+            
+            # 只在用户未指定时应用插件默认值
+            if ssh_command.expect_string is None and 'expect_string' in plugin_params:
+                command_dict['expect_string'] = plugin_params['expect_string']
+            
+            if ssh_command.delay_factor == 1.0 and 'delay_factor' in plugin_params:
+                command_dict['delay_factor'] = plugin_params['delay_factor']
+            
+            if ssh_command.max_loops == 500 and 'max_loops' in plugin_params:
+                command_dict['max_loops'] = plugin_params['max_loops']
+        
+        # 检查是否有特定命令的配置
+        if 'commands' in device_config:
+            command_configs = device_config['commands']
+            command_name = ssh_command.command.strip().lower()
+            
+            # 尝试匹配命令配置
+            for config_key, config_value in command_configs.items():
+                if config_value.get('command', '').strip().lower() == command_name:
+                    logger.info(f"应用命令特定配置: {config_key}")
+                    # 应用特定命令配置，但不覆盖用户明确指定的参数
+                    if ssh_command.expect_string is None and 'expect_string' in config_value:
+                        command_dict['expect_string'] = config_value['expect_string']
+                    if ssh_command.delay_factor == 1.0 and 'delay_factor' in config_value:
+                        command_dict['delay_factor'] = config_value['delay_factor']
+                    if ssh_command.max_loops == 500 and 'max_loops' in config_value:
+                        command_dict['max_loops'] = config_value['max_loops']
+                    break
+        
+        return SSHCommand(**command_dict)
     
     @handle_exception
     def connect(self, credentials: SSHCredentials) -> bool:
@@ -63,7 +117,7 @@ class SSHCollector:
                     details={"missing_params": "host, username, and (password or private_key) are required"}
                 )
             
-            # 构建连接参数
+            # 构建基础连接参数
             connection_params = {
                 'device_type': credentials.device_type,
                 'host': credentials.host,
@@ -73,17 +127,25 @@ class SSHCollector:
                 'session_timeout': credentials.timeout,
                 'auth_timeout': credentials.timeout,
                 'banner_timeout': credentials.timeout,
-                'read_timeout_override': 60,  # 增加读取超时时间
-                'global_delay_factor': 2,     # 增加全局延迟因子
+                'read_timeout_override': 60,  # 默认读取超时时间
+                'global_delay_factor': 2,     # 默认全局延迟因子
             }
             
-            # 华为设备特殊配置
-            if credentials.device_type in ['huawei', 'huawei_vrpv8']:
-                connection_params.update({
-                    'global_delay_factor': 3,
-                    'read_timeout_override': 90,
-                    'session_timeout': 120,
-                })
+            # 从插件获取设备特定配置
+            if plugin_manager and plugin_manager.has_plugin(credentials.device_type):
+                device_config = plugin_manager.get_device_config(credentials.device_type)
+                if device_config and 'connection_params' in device_config:
+                    plugin_params = device_config['connection_params']
+                    logger.info(f"应用插件配置 {credentials.device_type}: {plugin_params}")
+                    connection_params.update(plugin_params)
+            else:
+                # 保留原有的华为设备特殊配置作为后备
+                if credentials.device_type in ['huawei', 'huawei_vrpv8']:
+                    connection_params.update({
+                        'global_delay_factor': 3,
+                        'read_timeout_override': 90,
+                        'session_timeout': 120,
+                    })
             
             # 添加认证方式
             if credentials.password:
@@ -98,6 +160,7 @@ class SSHCollector:
             # 建立连接
             self.connection = ConnectHandler(**connection_params)
             self.current_host = credentials.host
+            self.device_type = credentials.device_type  # 保存设备类型
             
             logger.info(f"成功连接到设备: {credentials.host}")
             return True
@@ -134,6 +197,10 @@ class SSHCollector:
         """执行单个SSH命令"""
         if not self.connection:
             raise SSHConnectionException("SSH连接未建立")
+        
+        # 应用插件参数
+        if self.device_type:
+            ssh_command = self._apply_plugin_command_params(ssh_command, self.device_type)
         
         try:
             logger.debug(f"执行命令: {ssh_command.command}")
