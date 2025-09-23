@@ -12,9 +12,10 @@ from typing import Dict, Any
 from .config import settings
 from .utils import logger, CollectorException
 from .registration import registration_manager
-from .mq_consumer import async_mq_consumer
-from .mq_publisher import mq_publisher
+from .database import database_manager
 from .api import app
+from .xxl_job.executor import xxl_job_executor
+from .xxl_job.client import xxl_job_client
 
 
 class SSHCollectorService:
@@ -27,92 +28,69 @@ class SSHCollectorService:
     async def startup(self):
         """启动服务"""
         try:
-            logger.info("=" * 60)
-            logger.info("SSH采集器启动中...")
-            logger.info(f"采集器ID: {settings.collector_id}")
-            logger.info(f"服务端口: {settings.service_port}")
-            logger.info(f"控制器地址: {settings.controller_host}:{settings.controller_port}")
-            logger.info("=" * 60)
+            logger.info("启动SSH采集器服务...")
             
-            # 1. 初始化MQ发布者
-            logger.info("初始化MQ发布者...")
-            await self._init_mq_publisher()
+            # 初始化数据库
+            logger.info("初始化数据库...")
+            await database_manager.init_database()
             
-            # 2. 启动MQ消费者
-            logger.info("启动MQ消费者...")
-            await async_mq_consumer.start()
+            # 启动XXL-Job执行器
+            logger.info("启动XXL-Job执行器...")
+            await xxl_job_executor.start_server()
             
-            # 3. 注册到控制器
+            # 注册到XXL-Job调度中心
+            logger.info("注册到XXL-Job调度中心...")
+            await xxl_job_client.register_executor()
+            
+            # 注册到控制器
             logger.info("注册到控制器...")
-            await registration_manager.start()
+            await registration_manager.register()
             
             self.running = True
-            logger.info("SSH采集器启动完成！")
+            logger.info("SSH采集器服务启动完成")
             
         except Exception as e:
-            logger.error(f"启动服务失败: {str(e)}")
-            await self.shutdown()
+            logger.error(f"服务启动失败: {e}")
+            raise CollectorException(f"服务启动失败: {e}")
             raise
     
     async def shutdown(self):
         """关闭服务"""
-        if not self.running:
-            return
-            
-        logger.info("SSH采集器关闭中...")
-        self.running = False
-        
         try:
-            # 1. 停止心跳检测
-            logger.info("停止心跳检测...")
-            await registration_manager.stop_heartbeat()
+            logger.info("开始关闭SSH采集器服务...")
+            self.running = False
             
-            # 2. 停止MQ消费者
-            logger.info("停止MQ消费者...")
-            await async_mq_consumer.stop()
+            # 注销XXL-Job执行器
+            logger.info("注销XXL-Job执行器...")
+            await xxl_job_client.unregister_executor()
             
-            # 3. 断开MQ发布者连接
-            logger.info("断开MQ发布者连接...")
-            mq_publisher.disconnect()
+            # 停止XXL-Job执行器
+            logger.info("停止XXL-Job执行器...")
+            await xxl_job_executor.stop_server()
             
-            logger.info("SSH采集器已关闭")
+            # 从控制器注销
+            logger.info("从控制器注销...")
+            await registration_manager.unregister()
+            
+            # 关闭数据库连接
+            logger.info("关闭数据库连接...")
+            await database_manager.close()
+            
+            logger.info("SSH采集器服务已关闭")
             
         except Exception as e:
-            logger.error(f"关闭服务时发生错误: {str(e)}")
-        
+            logger.error(f"关闭服务时发生错误: {e}")
         finally:
             self.shutdown_event.set()
     
-    async def _init_mq_publisher(self):
-        """初始化MQ发布者"""
-        try:
-            mq_publisher.connect()
-            logger.info("MQ发布者初始化成功")
-        except Exception as e:
-            logger.error(f"MQ发布者初始化失败: {str(e)}")
-            # MQ发布者失败不阻止服务启动，但会记录错误
-    
-    async def _register_to_controller(self):
-        """注册到控制器"""
-        try:
-            await registration_manager.register()
-            logger.info("控制器注册成功")
-        except Exception as e:
-            logger.error(f"控制器注册失败: {str(e)}")
-            # 注册失败不阻止服务启动，但会记录错误
-    
-    def setup_signal_handlers(self):
+    def _setup_signal_handlers(self):
         """设置信号处理器"""
         def signal_handler(signum, frame):
-            logger.info(f"收到信号 {signum}，开始关闭服务...")
+            logger.info(f"收到信号 {signum}，准备关闭服务...")
             asyncio.create_task(self.shutdown())
         
-        # 注册信号处理器
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-        
-        if hasattr(signal, 'SIGHUP'):
-            signal.signal(signal.SIGHUP, signal_handler)
 
 
 # 全局服务实例

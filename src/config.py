@@ -34,16 +34,15 @@ class Settings(BaseSettings):
     heartbeat_interval: int = 3  # 秒
     heartbeat_timeout: int = 9   # 连续3次未收到心跳认为离线
     
-    # RabbitMQ配置
-    rabbitmq_host: str = "localhost"
-    rabbitmq_port: int = 5672
-    rabbitmq_username: str = "guest"
-    rabbitmq_password: str = "guest"
-    rabbitmq_vhost: str = "/"
-    
-    # 队列配置
-    task_queue: str = "ssh_collection_tasks"
-    result_queue: str = "ssh_collection_results"
+    # XXL-Job配置
+    xxl_job_admin_addresses: str = "http://localhost:8080/xxl-job-admin"
+    xxl_job_access_token: str = ""
+    xxl_job_executor_app_name: str = "ssh-collector-executor"
+    xxl_job_executor_address: str = ""  # 自动获取
+    xxl_job_executor_ip: str = ""       # 自动获取
+    xxl_job_executor_port: int = 9999
+    xxl_job_executor_log_path: str = "logs/xxl-job"
+    xxl_job_executor_log_retention_days: int = 30
     
     # SSH配置
     ssh_timeout: int = 30
