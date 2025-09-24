@@ -58,6 +58,9 @@ test_ssh_connection() {
 prepare_deployment_files() {
     log_info "准备部署文件..."
     
+    # 切换到项目根目录
+    cd "$(dirname "$0")/../.."
+    
     # 创建部署包
     DEPLOY_PACKAGE="ssh-collector-deploy.tar.gz"
     
@@ -69,9 +72,9 @@ prepare_deployment_files() {
     # 复制必要文件
     cp -r src/ "$PACKAGE_DIR/"
     cp requirements.txt "$PACKAGE_DIR/"
-    cp healthcheck.sh "$PACKAGE_DIR/"
-    cp Dockerfile.alpine "$PACKAGE_DIR/Dockerfile"
-    cp docker-compose.alpine.yml "$PACKAGE_DIR/docker-compose.yml"
+    cp scripts/deploy/healthcheck.sh "$PACKAGE_DIR/"
+    cp scripts/deploy/Dockerfile.alpine "$PACKAGE_DIR/Dockerfile"
+    cp scripts/deploy/docker-compose.alpine.yml "$PACKAGE_DIR/docker-compose.yml"
     
     # 检查nginx配置文件
     if [[ -f "nginx/nginx.conf" ]]; then
@@ -87,6 +90,8 @@ set -e
 
 DEPLOY_DIR="/opt/ssh-collector"
 USERNAME="eccom123"
+CONTAINER_PORT=8000
+DEFAULT_HOST_PORT=8000
 
 # 颜色输出
 RED='\033[0;31m'
@@ -109,6 +114,71 @@ log_warning() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# 检查端口是否被占用
+check_port_available() {
+    local port=$1
+    if ss -tlnp | grep -q ":${port} "; then
+        return 1  # 端口被占用
+    else
+        return 0  # 端口可用
+    fi
+}
+
+# 查找可用端口
+find_available_port() {
+    local start_port=$1
+    local max_attempts=100
+    local current_port=$start_port
+    
+    echo "[INFO] 检查端口可用性，起始端口: $start_port" >&2
+    
+    for ((i=0; i<max_attempts; i++)); do
+        if check_port_available $current_port; then
+            echo "[SUCCESS] 找到可用端口: $current_port" >&2
+            echo $current_port
+            return 0
+        else
+            echo "[WARNING] 端口 $current_port 已被占用，尝试下一个端口" >&2
+            current_port=$((current_port + 1))
+        fi
+    done
+    
+    echo "[ERROR] 无法找到可用端口（尝试了 $max_attempts 个端口）" >&2
+    return 1
+}
+
+# 更新docker-compose.yml文件中的端口映射
+update_port_mapping() {
+    local host_port=$1
+    local compose_file="docker-compose.yml"
+    
+    echo "[INFO] 更新端口映射: $host_port:$CONTAINER_PORT"
+    
+    # 备份原文件
+    cp "$compose_file" "${compose_file}.backup"
+    
+    # 使用sed替换端口映射，确保格式正确
+    sed -i "s/- \"[^\"]*:8000\"/- \"${host_port}:8000\"/" "$compose_file"
+    
+    echo "[SUCCESS] 端口映射已更新"
+}
+
+# 更新docker-compose.yml文件中的端口映射
+update_port_mapping() {
+    local host_port=$1
+    local compose_file="docker-compose.yml"
+    
+    echo "[INFO] 更新端口映射: $host_port:$CONTAINER_PORT"
+    
+    # 备份原文件
+    cp "$compose_file" "${compose_file}.backup"
+    
+    # 使用sed替换端口映射，匹配任何非引号字符
+    sed -i "s/- \"[^\"]*:8000\"/- \"${host_port}:8000\"/" "$compose_file"
+    
+    echo "[SUCCESS] 端口映射已更新"
 }
 
 # 检查Docker
@@ -148,6 +218,16 @@ deploy_app() {
     
     cd $DEPLOY_DIR
     
+    # 查找可用端口
+    AVAILABLE_PORT=$(find_available_port $DEFAULT_HOST_PORT)
+    if [ $? -ne 0 ]; then
+        log_error "无法找到可用端口，部署失败"
+        exit 1
+    fi
+    
+    # 更新端口映射
+    update_port_mapping $AVAILABLE_PORT
+    
     # 停止现有服务
     docker-compose down || true
     
@@ -158,7 +238,11 @@ deploy_app() {
     # 等待服务启动
     sleep 15
     
-    log_success "应用部署完成"
+    # 保存端口信息到文件
+    echo "HOST_PORT=$AVAILABLE_PORT" > .env.port
+    echo "CONTAINER_PORT=$CONTAINER_PORT" >> .env.port
+    
+    log_success "应用部署完成，外部访问端口: $AVAILABLE_PORT"
 }
 
 # 验证部署
@@ -166,6 +250,15 @@ verify_deployment() {
     log_info "验证部署..."
     
     cd $DEPLOY_DIR
+    
+    # 读取端口信息
+    if [ -f ".env.port" ]; then
+        source .env.port
+        log_info "使用端口: $HOST_PORT"
+    else
+        HOST_PORT=$DEFAULT_HOST_PORT
+        log_warning "端口信息文件不存在，使用默认端口: $HOST_PORT"
+    fi
     
     # 检查容器状态
     docker-compose ps
@@ -178,6 +271,14 @@ verify_deployment() {
         docker-compose logs --tail=20 ssh-collector
     fi
     
+    # 检查外部端口访问
+    log_info "检查外部端口访问..."
+    if curl -f -m 10 http://localhost:$HOST_PORT/health 2>/dev/null; then
+        log_success "外部端口访问正常"
+    else
+        log_warning "外部端口访问失败，请检查防火墙设置"
+    fi
+    
     log_success "验证完成"
 }
 
@@ -187,7 +288,18 @@ main() {
     create_directories
     deploy_app
     verify_deployment
-    log_success "部署完成！访问地址: http://$(hostname -I | awk '{print $1}'):8000"
+    
+    # 读取最终端口信息
+    if [ -f ".env.port" ]; then
+        source .env.port
+        FINAL_PORT=$HOST_PORT
+    else
+        FINAL_PORT=$DEFAULT_HOST_PORT
+    fi
+    
+    log_success "部署完成！访问地址: http://$(hostname -I | awk '{print $1}'):$FINAL_PORT"
+    log_info "API文档地址: http://$(hostname -I | awk '{print $1}'):$FINAL_PORT/docs"
+    log_info "健康检查地址: http://$(hostname -I | awk '{print $1}'):$FINAL_PORT/health"
 }
 
 main "$@"
@@ -198,7 +310,10 @@ EOF
     # 打包
     cd "$TEMP_DIR"
     tar -czf "$DEPLOY_PACKAGE" ssh-collector/
-    mv "$DEPLOY_PACKAGE" "/Users/wangfuyu/PythonCode/SSHCollector/"
+    
+    # 移动到项目根目录
+    PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+    cp "$DEPLOY_PACKAGE" "$PROJECT_ROOT/"
     
     # 清理
     rm -rf "$TEMP_DIR"
@@ -210,6 +325,9 @@ EOF
 upload_and_deploy() {
     log_info "上传部署包到服务器..."
     log_warning "请输入SSH密码: Eccom@12345"
+    
+    # 切换到项目根目录确保能找到部署包
+    cd "$(dirname "$0")/../.."
     
     # 上传部署包
     scp -o StrictHostKeyChecking=no ssh-collector-deploy.tar.gz "$USERNAME@$SERVER_IP:/tmp/"
@@ -238,16 +356,37 @@ final_verification() {
         echo '=== 容器状态 ==='
         docker-compose ps
         echo
-        echo '=== 端口监听 ==='
-        ss -tlnp | grep :8000 || echo '端口8000未监听'
+        
+        # 读取端口信息
+        if [ -f '.env.port' ]; then
+            source .env.port
+            FINAL_PORT=\$HOST_PORT
+        else
+            FINAL_PORT=8000
+        fi
+        
+        echo '=== 端口信息 ==='
+        echo \"容器内部端口: 8000\"
+        echo \"服务器外部端口: \$FINAL_PORT\"
         echo
-        echo '=== 服务测试 ==='
-        curl -s http://localhost:8000/health || echo '健康检查失败'
+        
+        echo '=== 端口监听状态 ==='
+        ss -tlnp | grep \":\$FINAL_PORT \" || echo \"端口 \$FINAL_PORT 未监听\"
+        echo
+        
+        echo '=== 服务健康检查 ==='
+        curl -s http://localhost:8000/health || echo '容器内部健康检查失败'
+        echo
+        curl -s http://localhost:\$FINAL_PORT/health || echo '外部端口健康检查失败'
     "
     
+    # 获取服务器IP和端口信息
+    FINAL_PORT=$(ssh_exec "cd $DEPLOY_DIR && [ -f '.env.port' ] && source .env.port && echo \$HOST_PORT || echo 8000")
+    
     log_success "部署验证完成！"
-    log_info "访问地址: http://$SERVER_IP:8000"
-    log_info "API文档: http://$SERVER_IP:8000/docs"
+    log_info "访问地址: http://$SERVER_IP:$FINAL_PORT"
+    log_info "API文档: http://$SERVER_IP:$FINAL_PORT/docs"
+    log_info "健康检查: http://$SERVER_IP:$FINAL_PORT/health"
 }
 
 # 主函数
